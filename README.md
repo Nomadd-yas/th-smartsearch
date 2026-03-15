@@ -35,7 +35,8 @@
 - **Workspace-сессии** — сохранение состояния поиска в Redis с ручными корректировками контрактов
 - **Корзина** — хранение позиций закупки с рассчитанной НМЦК и текстовым обоснованием
 - **Отчёты** — генерация обоснования НМЦК в формате DOCX с историей документов
-- **JWT-аутентификация** — access + opaque refresh токены, автоматическое создание пользователя `admin` при первом запуске
+- **JWT-аутентификация** — access + opaque refresh токены,
+  регистрация через `POST /api/v1/auth/register`
 
 ---
 
@@ -251,7 +252,13 @@ python run.py --host 0.0.0.0 --port 8080
 python run.py --reload
 ```
 
-При старте автоматически создаётся пользователь **`admin` / `admin123`**, если база пуста.
+Для первого входа зарегистрируйте пользователя:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "your_password"}'
+```
 
 Swagger UI: [`http://localhost:8000/docs`](http://localhost:8000/docs)
 
