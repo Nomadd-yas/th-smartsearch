@@ -24,12 +24,22 @@ class NmckResult:
     window_days: int   # длина оптимального окна (дней)
     cv: float          # коэффициент вариации оптимального окна (0..1)
     contracts: list[AnnotatedContract] = field(default_factory=list)
+    is_manual: bool = False  # True — НМЦК задана вручную (недостаточно данных)
+
+
+# ── Порог несовместимости ────────────────────────────────────────
+
+_COMPAT_FACTOR = 3.0  # ручная цена не должна выходить за [min/3, max*3]
+
+
+class IncompatiblePriceError(ValueError):
+    """Ручная цена несопоставима с найденными рыночными ценами."""
 
 
 def remove_outliers(series: pd.Series) -> pd.Series:
     """Исключаем выбросы по IQR (стандарт для НМЦК)"""
     q1 = series.quantile(0.25)
-    q3 = series.quantile(0.75)
+    q3 = series.quantile(0.85)
     iqr = q3 - q1
     lower = q1 - 1.5 * iqr
     upper = q3 + 1.5 * iqr
@@ -102,15 +112,58 @@ def calculate_nmck(
         return None
 
     # Строим DataFrame, сохраняя индекс в отфильтрованном списке
+    cid_col = "Идентификатор контракта"
+    ste_col = "Идентификатор СТЕ"
     df = pd.DataFrame([
         {
-            "_idx": i,
-            "Цена за единицу": c.get("Цена за единицу"),
-            "Дата заключения контракта": c.get("Дата заключения контракта"),
-            "Идентификатор контракта": c.get("Идентификатор контракта"),
+            "_idx":                        i,
+            "Цена за единицу":             c.get("Цена за единицу"),
+            "Количество":                  c.get("Количество"),
+            "Дата заключения контракта":   c.get("Дата заключения контракта"),
+            cid_col:                       c.get(cid_col),
+            ste_col:                       c.get(ste_col, ""),
         }
         for i, c in enumerate(contracts)
     ])
+
+    df["Цена за единицу"] = pd.to_numeric(df["Цена за единицу"], errors="coerce")
+    df["Количество"] = pd.to_numeric(df["Количество"], errors="coerce").fillna(1.0)
+
+    # ── Агрегация по (контракт, СТЕ) ─────────────────────────────
+    # Ключ: (Идентификатор контракта, Идентификатор СТЕ).
+    # Это корректно устраняет дублирование строк одного СТЕ внутри
+    # одного контракта (разные партии/лоты), при этом НЕ сливает
+    # разные СТЕ из одного контракта в одну ценовую точку.
+    has_contract_id = df[cid_col].notna() & (df[cid_col] != "")
+    if has_contract_id.any():
+        df_with_id = df[has_contract_id].copy()
+
+        def _agg(g: pd.DataFrame) -> pd.Series:
+            qty   = g["Количество"]
+            price = g["Цена за единицу"]
+            valid = price.notna() & qty.notna()
+            if valid.any():
+                wp = (price[valid] * qty[valid]).sum() / qty[valid].sum()
+            else:
+                wp = price.dropna().iloc[0] if price.notna().any() else float("nan")
+            return pd.Series({
+                "_idx":                      g["_idx"].iloc[0],
+                "Цена за единицу":           wp,
+                "Дата заключения контракта": g["Дата заключения контракта"].iloc[0],
+            })
+
+        df_agg = (
+            df_with_id.groupby([cid_col], sort=False)
+            .apply(_agg, include_groups=False)
+            .reset_index()
+            [["_idx", "Цена за единицу", "Дата заключения контракта", cid_col]]
+        )
+        df_no_id = df[~has_contract_id][
+            ["_idx", "Цена за единицу", "Дата заключения контракта", cid_col]
+        ].copy()
+        df = pd.concat([df_agg, df_no_id], ignore_index=True)
+    else:
+        df = df[["_idx", "Цена за единицу", "Дата заключения контракта", cid_col]].copy()
 
     df["Цена за единицу"] = pd.to_numeric(df["Цена за единицу"], errors="coerce")
     df["Дата"] = pd.to_datetime(
@@ -144,7 +197,7 @@ def calculate_nmck(
     # ── Удаление выбросов по IQR ──────────────────────────────────
     price = df["Цена за единицу"]
     q1 = price.quantile(0.25)
-    q3 = price.quantile(0.75)
+    q3 = price.quantile(0.85)
     iqr = q3 - q1
     lower = q1 - 1.5 * iqr
     upper = q3 + 1.5 * iqr

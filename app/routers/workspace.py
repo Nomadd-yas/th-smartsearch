@@ -125,7 +125,11 @@ def workspace_search(
         date_from=req.date_from, date_to=req.date_to, vat=req.vat,
     )
 
-    nmck_result = calculate_nmck(contracts)
+    nmck_result = calculate_nmck(
+        contracts,
+        date_from=req.date_from,
+        date_to=req.date_to,
+    )
     nmck_data = _build_nmck_data(nmck_result)
 
     search_ms = (time.perf_counter() - t0) * 1000

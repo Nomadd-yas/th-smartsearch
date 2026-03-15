@@ -150,6 +150,7 @@ class SteSearchClient:
         unit_lower = unit.strip().lower() if unit else None
         vat_lower = vat.strip().lower() if vat else None
 
+        seen_contract_ids: set[str] = set()
         dated: list[tuple[datetime, float]] = []
         for c in contracts:
             if region_lower:
@@ -172,6 +173,12 @@ class SteSearchClient:
             raw_price = c.get("Цена за единицу")
             if raw_price is None:
                 continue
+            # Дедупликация: одна цена на контракт (берём первую встреченную строку)
+            cid = c.get("Идентификатор контракта")
+            if cid and cid in seen_contract_ids:
+                continue
+            if cid:
+                seen_contract_ids.add(cid)
             try:
                 dated.append((dt, float(raw_price)))
             except (ValueError, TypeError):
@@ -259,18 +266,31 @@ class SteSearchClient:
             contracts = [c for c in contracts
                          if c.get("Ставка НДС") and
                             c["Ставка НДС"].strip().lower() == vl]
+        # Фильтрация по дате: явный диапазон или дефолтное 6-месячное окно
+        # (совпадает с логикой calculate_nmck, чтобы n_total == len(contracts))
+        dated: list[tuple[datetime, dict]] = []
+        for c in contracts:
+            dt = _parse_date(c.get("Дата заключения контракта"))
+            if dt is None:
+                continue
+            dated.append((dt, c))
+
+        if not dated:
+            return []
+
         if date_from or date_to:
-            out = []
-            for c in contracts:
-                dt = _parse_date(c.get("Дата заключения контракта"))
-                if dt is None:
-                    continue
-                if date_from and dt.date() < date_from:
-                    continue
-                if date_to and dt.date() > date_to:
-                    continue
-                out.append(c)
-            contracts = out
+            contracts = [
+                c for dt, c in dated
+                if (not date_from or dt.date() >= date_from)
+                and (not date_to or dt.date() <= date_to)
+            ]
+        else:
+            # Дефолтное окно 6 месяцев от последней даты —
+            # то же, что calculate_nmck применяет при отсутствии дат
+            from dateutil.relativedelta import relativedelta
+            last_date = max(dt for dt, _ in dated)
+            cutoff = last_date - relativedelta(months=6)
+            contracts = [c for dt, c in dated if dt >= cutoff]
 
         return contracts
 
